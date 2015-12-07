@@ -1,0 +1,112 @@
+#!/bin/bash
+
+locate_pass=`dirname $0`
+vpc_id="$1"
+if [[ -z $vpc_id ]];then echo -e "\n  Usage: `basename $0` <VPC Id>\n\n";exit;fi
+
+get_sg_list=`aws ec2 describe-security-groups`
+declare -a SgNameInd="( ` echo $get_sg_list|$locate_pass/json_parser -l |sed -e 's/\["\|\"]\|\"//g' -e 's/\s/,/g'|egrep -w "SecurityGroups,[[:digit:]]+,GroupName,.*"|cut -d "," -f 4` )"
+
+declare -a SgInd="( ` echo $get_sg_list|$locate_pass/json_parser -l |sed -e 's/\["\|\"]\|\"//g' -e 's/\s/,/g'|egrep -w "SecurityGroups,[[:digit:]]+,VpcId,$vpc_id"|cut -d "," -f 2 ` )"
+
+declare -a GroupIdInd="( ` echo $get_sg_list|$locate_pass/json_parser -l |sed -e 's/\["\|\"]\|\"//g' -e 's/\s/,/g'|egrep -w "SecurityGroups,[[:digit:]]+,GroupId,.*"|cut -d "," -f 4` )"
+
+
+sg_det=`echo "$get_sg_list"|$locate_pass/json_parser -l |grep 'IpPermissions'|sed -e 's/\["\|\"]\|\"//g' -e 's/\s/,/g' -e 's/,/ /g'`
+
+for ind in "${SgInd[@]}";do
+sg_list=`echo "$sg_det"|grep "SecurityGroups $ind IpPermissions.*"|sed -e 's/\["\|\"]\|\"//g' -e 's/\s/,/g' -e 's/,/ /g'`
+IpPermissionsIndex=`echo "$sg_list"|grep -w 'IpPermissions'| awk '{print $4}'|uniq`
+IpPermissionsEgressIndex=`echo "$sg_list"|grep -w 'IpPermissionsEgress'| awk '{print $4}'|uniq`
+
+#echo -e "\n-============== ${GroupIdInd[$ind]} ==============-\n"
+echo -e "Name: \"${SgNameInd[$ind]}\"\nSgId: ${GroupIdInd[$ind]}"
+echo "################ Inbound ###################";
+
+while read -a line; do 
+	pr[4]='';pr[5]='';defis=' - ';Type=""
+	pr[1]=`echo  "$sg_list" |grep -w "IpPermissions $line"|egrep -o -w "IpProtocol .*"|awk '{print $2}'|xargs`
+	pr[2]=`echo  "$sg_list" |grep -w "IpPermissions $line"|egrep -o -w "FromPort .*"|awk '{print $2}'|xargs`
+	pr[3]=`echo  "$sg_list" |grep -w "IpPermissions $line"|egrep -o -w "ToPort .*"|awk '{print $2}'|xargs`
+	pr[4]=`echo  "$sg_list" |grep -w "IpPermissions $line"|egrep -o -w "IpRanges .*"|awk '{print $4}'|xargs`
+	pr[5]=`echo  "$sg_list" |grep -w "IpPermissions $line"|egrep -o -w 'UserIdGroupPairs.*GroupId.*'|awk '{print $4}'|xargs`
+	if [[ ${pr[1]} -eq "-1" && -z ${pr[2]} &&  -z ${pr[3]} ]]; then pr[1]="all";defis="   ";fi
+	if [[ ${pr[2]} -eq ${pr[3]} ]]; then pr[3]="";defis="   ";fi
+	if [[ ${pr[2]} -eq "-1" ]]; then pr[2]="all";fi
+	if [[ ${pr[1]} == "icmp" && ${pr[2]} == "all" ]] 
+	  then 
+		pr[2]="all"
+		pr[3]="n/a"
+		Type="type "
+	fi
+
+	if [[ ${pr[1]} == "icmp" ]]; then  pr[3]="";defis="   "; Type="type "; fi
+
+	if [[ ${pr[1]} == "tcp" || ${pr[1]} == "udp" ]] 
+	  then  
+		if [[ ${pr[2]} -eq "0" && ${pr[3]}  -eq "65535" ]]
+		  then 
+		    pr[2]=""
+		    defis="   "
+		    pr[3]="all" 
+		fi 
+	fi
+
+	if [[ -n ${pr[4]} || -n ${pr[5]} ]]; then 
+	  header="%-2s %5s %8.8s%1s%-6.6s %4s "
+          printf "$header" "$line"  "${pr[1]}" "${Type}${pr[2]}" "$defis" "${pr[3]}" "to:"
+          echo -e "${pr[4]} ${pr[5]}"
+	else
+	  header="%-2s %5s %8.8s%1s%-6.6s %4s "
+          printf "$header" "$line"  "${pr[1]}" "${Type}${pr[2]}" "$defis" "${pr[3]}" "to:"
+          echo -e "${pr[4]} ${pr[5]}"
+	fi
+	#echo "=============================================="
+		
+done <<< "$IpPermissionsIndex"
+ 
+echo;echo "################ Outbound ###################";echo
+
+while read -a line; do
+        pr[4]='';pr[5]='';defis=' - ';Type=""
+        pr[1]=`echo  "$sg_list" |grep -w "IpPermissionsEgress $line"|egrep -o -w "IpProtocol .*"|awk '{print $2}'|xargs`
+        pr[2]=`echo  "$sg_list" |grep -w "IpPermissionsEgress $line"|egrep -o -w "FromPort .*"|awk '{print $2}'|xargs`
+        pr[3]=`echo  "$sg_list" |grep -w "IpPermissionsEgress $line"|egrep -o -w "ToPort .*"|awk '{print $2}'|xargs`
+        pr[4]=`echo  "$sg_list" |grep -w "IpPermissionsEgress $line"|egrep -o -w "IpRanges .*"|awk '{print $4}'|xargs`
+        pr[5]=`echo  "$sg_list" |grep -w "IpPermissionsEgress $line"|egrep -o -w 'UserIdGroupPairs.*GroupId.*'|awk '{print $4}'|xargs`
+        if [[ ${pr[1]} -eq "-1" && -z ${pr[2]} &&  -z ${pr[3]} ]]; then pr[1]="all";defis="";fi
+	if [[ ${pr[2]} -eq ${pr[3]} ]]; then pr[3]="";defis="   ";fi
+        if [[ ${pr[2]} -eq "-1" ]]; then pr[2]="all";fi
+        if [[ ${pr[1]} == "icmp" && ${pr[2]} == "all" ]]
+          then
+                pr[2]="all"
+                pr[3]="n/a"
+                Type="type "
+        fi
+
+        if [[ ${pr[1]} == "icmp" ]]; then  pr[3]="";defis="   "; Type="type "; fi
+
+        if [[ ${pr[1]} == "tcp" || ${pr[1]} == "udp" ]]
+          then
+                if [[ ${pr[2]} -eq "0" && ${pr[3]}  -eq "65535" ]]
+                  then
+                    pr[2]=""
+                    defis="   "
+                    pr[3]="all"
+                fi
+        fi
+
+        if [[ -n ${pr[4]} || -n ${pr[5]} ]]; then
+	  header="%-2s %5s %8.8s%1s%-6.6s %4s "
+          printf "$header" "$line"  "${pr[1]}" "${Type}${pr[2]}" "$defis" "${pr[3]}" "to:"
+	  echo -e "${pr[4]} ${pr[5]}"
+        else
+	  header="%-2s %5s %8.8s%1s%-6.6s %4s"
+          printf "$header" "$line" "${pr[1]}" "${pr[2]}" "$defis" "${pr[3]}" "to:" 
+	  echo -e "${pr[4]} ${pr[5]}"
+        fi
+        #echo "=============================================="
+
+done <<< "$IpPermissionsEgressIndex"
+echo
+done

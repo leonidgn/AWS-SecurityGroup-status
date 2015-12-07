@@ -1,0 +1,306 @@
+#!/bin/bash
+
+json_parser ()
+{
+throw () {
+  echo "$*" >&2
+  exit 1
+}
+
+BRIEF=0
+LEAFONLY=0
+PRUNE=0
+NORMALIZE_SOLIDUS=0
+
+usage() {
+  echo
+  echo "Usage: JSON.sh [-b] [-l] [-p] [-s] [-h]"
+  echo
+  echo "-p - Prune empty. Exclude fields with empty values."
+  echo "-l - Leaf only. Only show leaf nodes, which stops data duplication."
+  echo "-b - Brief. Combines 'Leaf only' and 'Prune empty' options."
+  echo "-s - Remove escaping of the solidus symbol (stright slash)."
+  echo "-h - This help text."
+  echo
+}
+
+parse_options() {
+  set -- "$@"
+  local ARGN=$#
+  while [ "$ARGN" -ne 0 ]
+  do
+    case $1 in
+      -h) usage
+          exit 0
+      ;;
+      -b) BRIEF=1
+          LEAFONLY=1
+          PRUNE=1
+      ;;
+      -l) LEAFONLY=1
+      ;;
+      -p) PRUNE=1
+      ;;
+      -s) NORMALIZE_SOLIDUS=1
+      ;;
+      ?*) echo "ERROR: Unknown option."
+          usage
+          exit 0
+      ;;
+    esac
+    shift 1
+    ARGN=$((ARGN-1))
+  done
+}
+
+awk_egrep () {
+  local pattern_string=$1
+
+  gawk '{
+    while ($0) {
+      start=match($0, pattern);
+      token=substr($0, start, RLENGTH);
+      print token;
+      $0=substr($0, start+RLENGTH);
+    }
+  }' pattern="$pattern_string"
+}
+
+tokenize () {
+  local GREP
+  local ESCAPE
+  local CHAR
+
+  if echo "test string" | egrep -ao --color=never "test" &>/dev/null
+  then
+    GREP='egrep -ao --color=never'
+  else
+    GREP='egrep -ao'
+  fi
+
+  if echo "test string" | egrep -o "test" &>/dev/null
+  then
+    ESCAPE='(\\[^u[:cntrl:]]|\\u[0-9a-fA-F]{4})'
+    CHAR='[^[:cntrl:]"\\]'
+  else
+    GREP=awk_egrep
+    ESCAPE='(\\\\[^u[:cntrl:]]|\\u[0-9a-fA-F]{4})'
+    CHAR='[^[:cntrl:]"\\\\]'
+  fi
+
+  local STRING="\"$CHAR*($ESCAPE$CHAR*)*\""
+  local NUMBER='-?(0|[1-9][0-9]*)([.][0-9]*)?([eE][+-]?[0-9]*)?'
+  local KEYWORD='null|false|true'
+  local SPACE='[[:space:]]+'
+
+  $GREP "$STRING|$NUMBER|$KEYWORD|$SPACE|." | egrep -v "^$SPACE$"
+}
+
+parse_array () {
+  local index=0
+  local ary=''
+  read -r token
+  case "$token" in
+    ']') ;;
+    *)
+      while :
+      do
+        parse_value "$1" "$index"
+        index=$((index+1))
+        ary="$ary""$value" 
+        read -r token
+        case "$token" in
+          ']') break ;;
+          ',') ary="$ary," ;;
+          *) throw "EXPECTED , or ] GOT ${token:-EOF}" ;;
+        esac
+        read -r token
+      done
+      ;;
+  esac
+  [ "$BRIEF" -eq 0 ] && value=$(printf '[%s]' "$ary") || value=
+  :
+}
+
+parse_object () {
+  local key
+  local obj=''
+  read -r token
+  case "$token" in
+    '}') ;;
+    *)
+      while :
+      do
+        case "$token" in
+          '"'*'"') key=$token ;;
+          *) throw "EXPECTED string GOT ${token:-EOF}" ;;
+        esac
+        read -r token
+        case "$token" in
+          ':') ;;
+          *) throw "EXPECTED : GOT ${token:-EOF}" ;;
+        esac
+        read -r token
+        parse_value "$1" "$key"
+        obj="$obj$key:$value"        
+        read -r token
+        case "$token" in
+          '}') break ;;
+          ',') obj="$obj," ;;
+          *) throw "EXPECTED , or } GOT ${token:-EOF}" ;;
+        esac
+        read -r token
+      done
+    ;;
+  esac
+  [ "$BRIEF" -eq 0 ] && value=$(printf '{%s}' "$obj") || value=
+  :
+}
+
+parse_value () {
+  local jpath="${1:+$1,}$2" isleaf=0 isempty=0 print=0
+  case "$token" in
+    '{') parse_object "$jpath" ;;
+    '[') parse_array  "$jpath" ;;
+    # At this point, the only valid single-character tokens are digits.
+    ''|[!0-9]) throw "EXPECTED value GOT ${token:-EOF}" ;;
+    *) value=$token
+       # if asked, replace solidus ("\/") in json strings with normalized value: "/"
+       [ "$NORMALIZE_SOLIDUS" -eq 1 ] && value=${value//\\\//\/}
+       isleaf=1
+       [ "$value" = '""' ] && isempty=1
+       ;;
+  esac
+  [ "$value" = '' ] && return
+  [ "$LEAFONLY" -eq 0 ] && [ "$PRUNE" -eq 0 ] && print=1
+  [ "$LEAFONLY" -eq 1 ] && [ "$isleaf" -eq 1 ] && [ $PRUNE -eq 0 ] && print=1
+  [ "$LEAFONLY" -eq 0 ] && [ "$PRUNE" -eq 1 ] && [ "$isempty" -eq 0 ] && print=1
+  [ "$LEAFONLY" -eq 1 ] && [ "$isleaf" -eq 1 ] && \
+    [ $PRUNE -eq 1 ] && [ $isempty -eq 0 ] && print=1
+  [ "$print" -eq 1 ] && printf "[%s]\t%s\n" "$jpath" "$value"
+  :
+}
+
+parse () {
+  read -r token
+  parse_value
+  read -r token
+  case "$token" in
+    '') ;;
+    *) throw "EXPECTED EOF GOT $token" ;;
+  esac
+}
+
+if ([ "$0" = "$BASH_SOURCE" ] || ! [ -n "$BASH_SOURCE" ]);
+then
+  parse_options "$@"
+  tokenize | parse
+fi
+
+}
+
+
+
+VpcId="$1"
+PubIp="$2"
+if [[ -z $VpcId || -z $PubIp ]];then echo -e "\n\n Usage: `basename $0` <VpcId> <all/pub>\n"; exit 23 ;fi
+
+ec2ind=""
+ec2instnum="0"
+    aws ec2 describe-instances |json_parser -l|sed -e 's/\["\|\"]\|\"//g' -e 's/\s/,/g' -e 's/,/ /g' > /tmp/~sg-pars-tmp.log
+    echo "Reservations 999999999 test" >> /tmp/~sg-pars-tmp.log
+if [[ $PubIp == "all" ]];then
+    while read  line;  do 
+            PubIpAddrIn=( "${PubIpAddrIn[@]}" `echo "$line" | grep "PublicIpAddress.*"|cut -d' ' -f2 ` )
+       	    All_Ec2=`echo "$line" |  egrep "Reservations [[:digit:]]+ Instances [[:digit:]] VpcId $VpcId"|cut -d' ' -f2 `
+    	    ps_ec2=( `echo "$line" |  egrep "Reservations [[:digit:]]+ "` )	
+   
+    	if [[ $ec2ind -ne  ${ps_ec2[1]} && -n $All_Ec2  ]];then 
+    	    ec2ind="${ps_ec2[1]}"
+	    EC2NUMLIST=( "${EC2NUMLIST[@]}" "$ec2ind" )
+	fi
+    
+            if [[ $ec2instnum -ne  ${ps_ec2[1]} ]];then 
+		if [[ ${EC2NUMLIST[-1]} -eq $ec2instnum ]]; then 
+        	  echo -e "\n====================== $ec2instnum =============================="          
+	          for each in "${Instance[@]}";do
+		    test_ln=`echo $each|egrep -wo "Instances [[:digit:]]+ InstanceId.*" `
+        	    if [[ -n $test_ln ]];then  echo -e "\e[1;34m $test_ln \e[0m";fi
+		    test_ln=`echo $each|egrep -wo "Instances [[:digit:]]+ State Name.*" |cut -d" " -f 5 `
+        	    if [[ -n $test_ln ]];then  echo -e "\e[1;35m $test_ln \e[0m";fi
+		    test_ln=`echo $each|grep "Value" `
+		    if [[ -n $test_ln ]];then test_ln_v=`echo $each|grep "Value" |cut -d" " -f 8`;fi
+		    test_ln=`echo $each|grep  "Key Name.*"`
+        	    if [[ -n $test_ln ]];then echo -e "\e[1;33m Name: $test_ln_v \e[0m \n"; test_ln_v="" ;fi
+        	    PublicIpAddress=`echo $each|egrep -wo "Instances [[:digit:]]+ PublicIpAddress.*"`
+        	    if [[ -n "$PublicIpAddress" ]];then echo -e "\e[1;31m $PublicIpAddress\e[0m"; PublicIpAddress="" ;fi
+        	    test_ln=`echo $each|egrep -wo "Instances [[:digit:]]+ PrivateIpAddress.*"`
+		    if [[ -n $test_ln ]];then PrvIp=`echo $test_ln|cut -d " " -f 4 `;echo -e " $test_ln";fi
+        	    test_ln=`echo $each|egrep -wo "Instances [[:digit:]]+ SecurityGroups.*GroupName.*"|sed -e 's/SecurityGroups/SG/' -e 's/GroupName/Name:/'`
+		    if [[ -n $test_ln ]];then SecGp="$test_ln";echo -en " $test_ln";fi
+        	    test_ln=`echo $each|egrep -wo "Instances [[:digit:]]+ SecurityGroups.*GroupId.*"|sed 's/GroupId/Id:/'|cut -d " " -f 5,6 `
+		    if [[ -n $test_ln ]];then SecGp="$test_ln";echo -e "\e[1;36m $test_ln \e[0m";fi
+       		 done
+
+               fi
+    		 Instance=()
+    		 ec2instnum=${ps_ec2[1]}
+    	 fi
+
+    	Instance=( "${Instance[@]}" "$line" )
+        
+    done < /tmp/~sg-pars-tmp.log
+fi
+
+if [[ $PubIp == "pub" ]];then
+    
+     PubIpAddrIn=( "${PubIpAddrIn[@]}" `grep -w "Reservations.*PublicIpAddress.*" /tmp/~sg-pars-tmp.log|cut -d' ' -f2 ` )
+     for each in "${PubIpAddrIn[@]}";do
+	
+        All_Ec2=`egrep -w "Reservations ${each}.*Instances [[:digit:]] VpcId.*$VpcId"  /tmp/~sg-pars-tmp.log|cut -d' ' -f2`
+	if [[  "$All_Ec2" != "" ]] ;then
+	IFS=',' read -r -a InstPubIP <<< "`grep -w "Reservations ${each}" /tmp/~sg-pars-tmp.log|xargs |sed -e 's/Reservations/,Reservations/g'`" 
+	echo -e "\n====================== ${each} =============================="
+	fi
+
+	for line in "${InstPubIP[@]}";do
+
+           ps_ec2=( `echo "$line" |  egrep "Reservations [[:digit:]]+ "` )
+           test_ln=`echo "$line"|egrep -wo "Instances [[:digit:]]+ InstanceId.*" `
+           if [[ -n $test_ln ]];then  echo -e "\e[1;34m $test_ln \e[0m";fi
+           test_ln=`echo "$line"|egrep -wo "Instances [[:digit:]]+ State Name.*" |cut -d" " -f 5 `
+           if [[ -n $test_ln ]];then  echo -e "\e[1;35m $test_ln \e[0m";fi
+           test_ln=`echo "$line"|grep "Value" `
+           if [[ -n $test_ln ]];then  test_ln_name=`echo "$line"|grep "Value" |cut -d" " -f 8`; fi
+           test_ln=`echo "$line"|grep -w "Key Name.*"`
+           if [[ -n $test_ln ]];then echo -e "\e[1;33m Name: $test_ln_name \e[0m \n"; fi
+           PublicIpAddress=`echo "$line"|egrep -wo "Instances [[:digit:]]+ PublicIpAddress.*"`
+           if [[ -n "$PublicIpAddress" ]];then echo -e "\e[1;31m $PublicIpAddress\e[0m"; PublicIpAddress="" ;fi
+           test_ln=`echo "$line"|egrep -wo "Instances [[:digit:]]+ PrivateIpAddress.*"`
+           if [[ -n $test_ln ]];then PrvIp=`echo $test_ln|cut -d " " -f 4 `;echo -e " $test_ln";fi
+           test_ln=`echo "$line"|egrep -wo "Instances [[:digit:]]+ SecurityGroups.*GroupName.*"|sed -e 's/SecurityGroups/SG/' -e 's/GroupName/Name:/'`
+           if [[ -n $test_ln ]];then SecGp="$test_ln";echo -en " $test_ln";fi
+           test_ln=`echo "$line"|egrep -wo "Instances [[:digit:]]+ SecurityGroups.*GroupId.*"|sed 's/GroupId/Id:/'|cut -d " " -f 5,6 `
+           if [[ -n $test_ln ]];then SecGp="$test_ln";echo -e "\e[1;36m $test_ln \e[0m";fi
+
+
+	done
+
+	if [[  "$All_Ec2" != "" ]] ;then
+	   sg_list=()
+           sg_list=( "${sg_list[@]}" `cat /tmp/~sg-pars-tmp.log|egrep -wo "Reservations ${each} Instances [[:digit:]]+ SecurityGroups.*" \
+                                                                                               |grep GroupId|cut -d" " -f 8` )
+	   sg_list=($(printf "%s\n" "${sg_list[@]}" | sort -u))
+	   locate_pass=`dirname $0`
+           for each in "${sg_list[@]}";do $locate_pass/sg_property $each; done
+	fi
+
+    done
+
+
+
+fi
+
+exit
+
+
