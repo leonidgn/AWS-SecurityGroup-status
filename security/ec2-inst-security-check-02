@@ -205,7 +205,7 @@ usage () {
    echo -e "        -a all instances\n"
    echo -e "        -p instances with public IP\n" 
    echo -e "        -i list of \"InstancesId\" \n" 
-   echo -e " Example: ./`basename $0` -i "i-cf66066f i-eea92ec3" -v vpc-ad3687c8  \n" 
+   echo -e " Example: ./`basename $0` -i \"i-cf66066f i-eea92ec3\" -v vpc-ad3687c8  \n" 
    exit 23 
 }
 
